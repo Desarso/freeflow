@@ -36,8 +36,8 @@ The native implementation establishes these concrete rules:
   deterministic result when polish fails.
 - Prefer direct editable-field insertion where it is dependable. Prefer
   clipboard paste for terminals, browsers, and Electron applications. Snapshot
-  the previous clipboard before staging a transcript, then restore it after the
-  target has had time to consume the paste.
+  the previous clipboard before staging a transcript, then restore it after a
+  one-second delivery grace period.
 - Read active-application context within a 200 ms total budget and limit an
   individual accessibility field read to 50 ms.
 
@@ -63,7 +63,7 @@ The native implementation establishes these concrete rules:
 | Audio capture | Complete | CPAL enumerates and persists devices, pre-opens and pauses the selected stream, resumes that cached device before any new enumeration, requests low-latency buffers, publishes levels, and falls back when a device genuinely disappears. Backend hosts stay cached for the daemon lifetime so repeated device refreshes cannot exhaust PipeWire-Pulse client connections; a live 96-refresh regression test holds at one connection. A real Kiyo preview starts in about 200 ms after warm-up. |
 | X11 shortcut | Partial | XGrabKey registers modifier chords and ordinary combinations, handles either Ctrl+Win key order and lock modifiers, distinguishes press/release, filters auto-repeat, and unregisters cleanly. A real X11/XWayland Ctrl+Win press and release drove live microphone capture successfully. Xvfb CI remains. |
 | Wayland shortcut | Partial | XDG portal registration and press/release work end to end on Hyprland 0.55 with the default modifier-only Ctrl+Win chord. GNOME, KDE, and other portal backends remain unverified. |
-| X11 injection | Partial | Clipboard plus XTest selects Ctrl+V or terminal-safe Ctrl+Shift+V. Successful paste restores bounded text, HTML, image, or file-list clipboard content after 160 ms; failed paste retains the transcript. The broad X11 target matrix remains. |
+| X11 injection | Partial | Clipboard plus XTest selects Ctrl+V or terminal-safe Ctrl+Shift+V. Successful paste keeps the transcript staged for a one-second delivery grace period, then restores bounded text, HTML, image, or file-list clipboard content in the background; failed paste retains the transcript. The broad X11 target matrix remains. |
 | Wayland injection | Partial | Hyprland restores the captured target and dispatches paste; `wtype` covers virtual-keyboard-capable compositors. Successful paste restores the previous clipboard only while the staged transcript remains current, so a newer user copy wins. A native-Wayland Chromium field passed both the physical-shortcut cloud test and the deterministic clipboard-restoration test. Other compositors remain unverified. |
 | AT-SPI injection | Deferred | Clipboard delivery has priority. |
 | Application context | Partial | Active window, PID, process, class, title, desktop, and terminal hints are collected over X11 and Hyprland. Toolkit editability remains deferred. |
@@ -101,8 +101,8 @@ The native implementation establishes these concrete rules:
 ## Unclear Behavior
 
 - Linux toolkits do not provide a universal paste-consumption acknowledgement.
-  FreeFlow uses a 160 ms consumption window and restores only if the staged
-  transcript still owns the clipboard. Applications that defer clipboard reads
-  beyond that window may need a longer application-specific delay.
+  FreeFlow keeps the transcript staged for a one-second delivery grace period
+  and restores only if it still owns the clipboard. The restore runs in the
+  background so the pipeline and HUD do not wait for it.
 - X11 does not expose toolkit-neutral editable-field contents, so smart spacing
   requires AT-SPI and is deferred from the first clipboard implementation.

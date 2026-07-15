@@ -20,10 +20,18 @@ async fn pastes_into_the_focused_wayland_field() {
     assert!(!result.clipboard_retained);
     assert!(!result.requires_manual_paste);
     assert_eq!(result.strategy, "waylandClipboardCtrlV");
-    assert_eq!(
-        clipboard
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        if clipboard
             .get_text()
-            .expect("clipboard should remain readable"),
-        original
-    );
+            .is_ok_and(|current| current == original)
+        {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the previous clipboard was not restored after delivery"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
 }

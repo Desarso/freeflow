@@ -21,7 +21,7 @@ use crate::{detect_session_type, x11};
 
 const PASTE_SETTLE_DELAY: std::time::Duration = std::time::Duration::from_millis(25);
 const FOCUS_SETTLE_DELAY: std::time::Duration = std::time::Duration::from_millis(25);
-const CLIPBOARD_RESTORE_DELAY: std::time::Duration = std::time::Duration::from_millis(160);
+const CLIPBOARD_RESTORE_DELAY: std::time::Duration = std::time::Duration::from_secs(1);
 const CLIPBOARD_READY_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(800);
 const MAX_CLIPBOARD_TEXT_BYTES: usize = 8 * 1024 * 1024;
 const MAX_CLIPBOARD_IMAGE_BYTES: usize = 64 * 1024 * 1024;
@@ -36,6 +36,19 @@ enum ClipboardSnapshot {
         alt_text: Option<String>,
     },
     Text(String),
+}
+
+struct PendingClipboardRestore {
+    id: u64,
+    transcript: String,
+    snapshot: ClipboardSnapshot,
+}
+
+#[derive(Default)]
+struct ClipboardState {
+    clipboard: Option<Clipboard>,
+    pending_restore: Option<PendingClipboardRestore>,
+    next_restore_id: u64,
 }
 
 trait ClipboardBackend {
@@ -145,16 +158,39 @@ fn restore_if_unchanged(
     Ok(true)
 }
 
+fn snapshot_for_staging(
+    clipboard: &mut impl ClipboardBackend,
+    pending: Option<PendingClipboardRestore>,
+) -> Option<ClipboardSnapshot> {
+    if let Some(pending) = pending
+        && clipboard.get_text().ok().as_deref() == Some(&pending.transcript)
+    {
+        return Some(pending.snapshot);
+    }
+    ClipboardSnapshot::capture(clipboard)
+}
+
+fn ensure_clipboard(state: &mut ClipboardState) -> Result<&mut Clipboard> {
+    if state.clipboard.is_none() {
+        state.clipboard = Some(Clipboard::new().map_err(|error| {
+            FreeFlowError::Clipboard(format!(
+                "could not connect to the desktop clipboard: {error}"
+            ))
+        })?);
+    }
+    Ok(state.clipboard.as_mut().expect("clipboard was initialized"))
+}
+
 #[derive(Clone)]
 pub struct LinuxTextInjector {
-    clipboard: Arc<Mutex<Option<Clipboard>>>,
+    clipboard: Arc<Mutex<ClipboardState>>,
 }
 
 impl LinuxTextInjector {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            clipboard: Arc::new(Mutex::new(None)),
+            clipboard: Arc::new(Mutex::new(ClipboardState::default())),
         }
     }
 
@@ -162,19 +198,11 @@ impl LinuxTextInjector {
         let clipboard = self.clipboard.clone();
         let text = text.to_owned();
         tokio::task::spawn_blocking(move || {
-            let mut clipboard = clipboard
+            let mut state = clipboard
                 .lock()
                 .map_err(|_| FreeFlowError::Clipboard("clipboard lock was poisoned".into()))?;
-            if clipboard.is_none() {
-                *clipboard = Some(Clipboard::new().map_err(|error| {
-                    FreeFlowError::Clipboard(format!(
-                        "could not connect to the desktop clipboard: {error}"
-                    ))
-                })?);
-            }
-            clipboard
-                .as_mut()
-                .expect("clipboard was initialized")
+            state.pending_restore = None;
+            ensure_clipboard(&mut state)?
                 .set_text(text)
                 .map_err(|error| FreeFlowError::Clipboard(error.to_string()))
         })
@@ -182,51 +210,85 @@ impl LinuxTextInjector {
         .map_err(|error| FreeFlowError::Internal(error.to_string()))?
     }
 
-    async fn stage_clipboard(&self, text: &str) -> Result<Option<ClipboardSnapshot>> {
+    async fn stage_clipboard(&self, text: &str) -> Result<Option<u64>> {
         let clipboard = self.clipboard.clone();
         let text = text.to_owned();
         tokio::task::spawn_blocking(move || {
-            let mut clipboard = clipboard
+            let mut state = clipboard
                 .lock()
                 .map_err(|_| FreeFlowError::Clipboard("clipboard lock was poisoned".into()))?;
-            if clipboard.is_none() {
-                *clipboard = Some(Clipboard::new().map_err(|error| {
-                    FreeFlowError::Clipboard(format!(
-                        "could not connect to the desktop clipboard: {error}"
-                    ))
-                })?);
+            let pending = state.pending_restore.take();
+            let snapshot;
+            {
+                let clipboard = ensure_clipboard(&mut state)?;
+                snapshot = snapshot_for_staging(clipboard, pending);
+                clipboard
+                    .set_text(text.clone())
+                    .map_err(|error| FreeFlowError::Clipboard(error.to_string()))?;
             }
-            let clipboard = clipboard.as_mut().expect("clipboard was initialized");
-            let snapshot = ClipboardSnapshot::capture(clipboard);
-            clipboard
-                .set_text(text)
-                .map_err(|error| FreeFlowError::Clipboard(error.to_string()))?;
-            Ok(snapshot)
+            let Some(snapshot) = snapshot else {
+                return Ok(None);
+            };
+            state.next_restore_id = state.next_restore_id.wrapping_add(1).max(1);
+            let restore_id = state.next_restore_id;
+            state.pending_restore = Some(PendingClipboardRestore {
+                id: restore_id,
+                transcript: text,
+                snapshot,
+            });
+            Ok(Some(restore_id))
         })
         .await
         .map_err(|error| FreeFlowError::Internal(error.to_string()))?
     }
 
-    async fn restore_clipboard(
-        &self,
-        transcript: &str,
-        snapshot: ClipboardSnapshot,
-    ) -> Result<bool> {
+    async fn restore_clipboard(&self, restore_id: u64) -> Result<bool> {
         tokio::time::sleep(CLIPBOARD_RESTORE_DELAY).await;
         let clipboard = self.clipboard.clone();
-        let transcript = transcript.to_owned();
         tokio::task::spawn_blocking(move || {
-            let mut clipboard = clipboard
+            let mut state = clipboard
                 .lock()
                 .map_err(|_| FreeFlowError::Clipboard("clipboard lock was poisoned".into()))?;
-            let clipboard = clipboard.as_mut().ok_or_else(|| {
+            if state.pending_restore.as_ref().map(|pending| pending.id) != Some(restore_id) {
+                return Ok(false);
+            }
+            let pending = state
+                .pending_restore
+                .take()
+                .expect("matching clipboard restore was present");
+            let clipboard = state.clipboard.as_mut().ok_or_else(|| {
                 FreeFlowError::Clipboard("clipboard connection was unavailable".into())
             })?;
-            restore_if_unchanged(clipboard, &transcript, snapshot)
+            restore_if_unchanged(clipboard, &pending.transcript, pending.snapshot)
                 .map_err(|error| FreeFlowError::Clipboard(error.to_string()))
         })
         .await
         .map_err(|error| FreeFlowError::Internal(error.to_string()))?
+    }
+
+    fn schedule_clipboard_restore(&self, restore_id: u64) {
+        let injector = self.clone();
+        tokio::spawn(async move {
+            if let Err(error) = injector.restore_clipboard(restore_id).await {
+                warn!(
+                    category = error.category(),
+                    "could not restore the previous clipboard after paste"
+                );
+            }
+        });
+    }
+
+    async fn discard_clipboard_restore(&self, restore_id: u64) {
+        let clipboard = self.clipboard.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            let Ok(mut state) = clipboard.lock() else {
+                return;
+            };
+            if state.pending_restore.as_ref().map(|pending| pending.id) == Some(restore_id) {
+                state.pending_restore = None;
+            }
+        })
+        .await;
     }
 
     fn paste_x11(use_terminal_shortcut: bool) -> Result<()> {
@@ -365,7 +427,7 @@ impl Default for LinuxTextInjector {
 #[async_trait]
 impl TextInjector for LinuxTextInjector {
     async fn inject(&self, text: &str, context: &AppContext) -> Result<InjectionResult> {
-        let previous_clipboard = self.stage_clipboard(text).await?;
+        let restore_id = self.stage_clipboard(text).await?;
         let session = detect_session_type();
         if session == SessionType::Wayland {
             Self::wait_for_wayland_clipboard(text).await;
@@ -386,19 +448,12 @@ impl TextInjector for LinuxTextInjector {
         };
         match paste {
             Ok(()) => {
-                let clipboard_retained = if let Some(snapshot) = previous_clipboard {
-                    match self.restore_clipboard(text, snapshot).await {
-                        Ok(_) => false,
-                        Err(error) => {
-                            warn!(
-                                category = error.category(),
-                                "could not restore the previous clipboard after paste"
-                            );
-                            true
-                        }
+                let clipboard_retained = match restore_id {
+                    Some(restore_id) => {
+                        self.schedule_clipboard_restore(restore_id);
+                        false
                     }
-                } else {
-                    true
+                    None => true,
                 };
                 Ok(InjectionResult {
                     strategy: match (session, terminal) {
@@ -414,9 +469,14 @@ impl TextInjector for LinuxTextInjector {
                     message: None,
                 })
             }
-            Err(error) => Err(FreeFlowError::Injection(format!(
-                "automatic paste failed: {error}. The transcript remains in the clipboard"
-            ))),
+            Err(error) => {
+                if let Some(restore_id) = restore_id {
+                    self.discard_clipboard_restore(restore_id).await;
+                }
+                Err(FreeFlowError::Injection(format!(
+                    "automatic paste failed: {error}. The transcript remains in the clipboard"
+                )))
+            }
         }
     }
 
@@ -552,6 +612,63 @@ mod tests {
         assert!(restore_if_unchanged(&mut clipboard, "dictated text", snapshot).unwrap());
         assert_eq!(clipboard.html.as_deref(), Some("<b>formatted</b> text"));
         assert_eq!(clipboard.text.as_deref(), Some("formatted text"));
+    }
+
+    #[test]
+    fn keeps_the_transcript_staged_for_delayed_input_consumers() {
+        assert!(
+            CLIPBOARD_RESTORE_DELAY >= std::time::Duration::from_secs(1),
+            "restoring sooner can make a delayed target paste the previous clipboard"
+        );
+    }
+
+    #[test]
+    fn carries_the_original_clipboard_across_rapid_dictations() {
+        let mut clipboard = FakeClipboard {
+            text: Some("original clipboard".into()),
+            ..FakeClipboard::default()
+        };
+        let original = ClipboardSnapshot::capture(&mut clipboard).unwrap();
+        clipboard.set_text("first transcript".into()).unwrap();
+
+        let snapshot = snapshot_for_staging(
+            &mut clipboard,
+            Some(PendingClipboardRestore {
+                id: 1,
+                transcript: "first transcript".into(),
+                snapshot: original,
+            }),
+        )
+        .unwrap();
+        clipboard.set_text("second transcript".into()).unwrap();
+
+        assert!(restore_if_unchanged(&mut clipboard, "second transcript", snapshot).unwrap());
+        assert_eq!(clipboard.text.as_deref(), Some("original clipboard"));
+    }
+
+    #[test]
+    fn a_newer_user_copy_replaces_a_pending_clipboard_snapshot() {
+        let mut clipboard = FakeClipboard {
+            text: Some("original clipboard".into()),
+            ..FakeClipboard::default()
+        };
+        let original = ClipboardSnapshot::capture(&mut clipboard).unwrap();
+        clipboard.set_text("first transcript".into()).unwrap();
+        clipboard.set_text("new user copy".into()).unwrap();
+
+        let snapshot = snapshot_for_staging(
+            &mut clipboard,
+            Some(PendingClipboardRestore {
+                id: 1,
+                transcript: "first transcript".into(),
+                snapshot: original,
+            }),
+        )
+        .unwrap();
+        clipboard.set_text("second transcript".into()).unwrap();
+
+        assert!(restore_if_unchanged(&mut clipboard, "second transcript", snapshot).unwrap());
+        assert_eq!(clipboard.text.as_deref(), Some("new user copy"));
     }
 
     #[test]

@@ -15,7 +15,7 @@ temporary PipeWire/PulseAudio microphone, the live OpenAI service, and an
 isolated native-Wayland Chromium textarea. The generated transcript appeared in
 the textarea automatically. A separate deterministic native-Wayland injection
 test confirmed that FreeFlow restores the clipboard value that preceded the
-transcript after the target consumes the paste.
+transcript after a one-second delivery grace period.
 
 The current user's persistent microphone is `Gaming Webcam [Kiyo] Analog
 Stereo`. It is stored by stable PulseAudio ID. FreeFlow pre-opens the stream at
@@ -28,8 +28,9 @@ The configured cloud path is OpenAI throughout: `gpt-realtime-whisper` handles
 speech, `gpt-4o-mini-transcribe` provides batch fallback, and `gpt-5.4-nano`
 optionally cleans text. The current build requests low transcription delay,
 uses no reasoning and low verbosity for `gpt-5.4` cleanup, and reduces fixed
-pre-paste waits from 230 ms to 50 ms. Clipboard restoration runs 160 ms after a
-successful paste without delaying when the target receives the transcript.
+pre-paste waits from 230 ms to 50 ms. Clipboard restoration runs in the
+background after a one-second delivery grace period, so delayed targets read the
+transcript without keeping the pipeline or HUD active.
 
 ## What Works End-to-End
 
@@ -52,9 +53,9 @@ successful paste without delaying when the target receives the transcript.
   Failed polish uses deterministic cleanup; failed delivery keeps copy and
   retry actions available.
 - Automatic paste snapshots the prior clipboard, stages the transcript, and
-  restores bounded text, HTML, image, or file-list content after consumption.
-  Restoration happens only if the transcript is still current, so text copied
-  by the user during delivery is never overwritten.
+  restores bounded text, HTML, image, or file-list content after a one-second
+  delivery grace period. Restoration happens only if the transcript is still
+  current, so text copied by the user during delivery is never overwritten.
 - X11 supports passive global grabs and XTest paste. Hyprland supports the XDG
   Global Shortcuts portal, modifier-only Ctrl+Win in either key order, target
   restoration, and compositor-assisted clipboard paste. Other Wayland
@@ -112,12 +113,12 @@ The live API test used the opt-in `FREEFLOW_TEST_OPENAI` and
 
 ## Tests Passing
 
-- 64 Rust tests pass across core, OpenAI, settings, Linux platform, and RPC
+- 67 Rust tests pass across core, OpenAI, settings, Linux platform, and RPC
   crates. Two live hardware/desktop interaction tests remain ignored by
   default.
 - Clippy passes across every Rust workspace target with warnings denied.
 - Rust formatting passes for the complete workspace.
-- Ten Electron main-process and utility tests pass, including top-panel-aware
+- Thirteen Electron main-process and utility tests pass, including top-panel-aware
   HUD placement, daemon callback isolation, destroyed-window lifecycle guards,
   and autostart command handling.
 - TypeScript checking and the production Electron renderer/main/preload build
@@ -152,8 +153,9 @@ The preserved Swift suite requires macOS and cannot run on this Arch Linux host.
 - Verified direct clipboard paste in native-Wayland Chrome and terminal-aware
   shortcut selection in unit tests.
 - Ran the ignored native-Wayland injection test against an isolated Chromium
-  textarea. The fixed probe appeared in the field, the test observed the prior
-  clipboard again after delivery, and no clipboard contents were printed.
+  textarea while its renderer was blocked for 500 ms. The fixed probe appeared
+  in the field, the test observed the prior clipboard again after delivery,
+  and no clipboard contents were printed.
 - Selected the Razer Kiyo by stable PulseAudio ID, persisted it to the private
   settings file, and captured real RMS data. After startup warm-up, preview
   became ready in roughly 200 ms and a 400 ms preview retained 440 ms of audio.
@@ -178,10 +180,10 @@ The preserved Swift suite requires macOS and cannot run on this Arch Linux host.
 
 ## Packaging Output
 
-- `desktop/dist/FreeFlow-Linux-0.2.0-x86_64.AppImage` — 137,868,532 bytes,
-  SHA-256 `d27a3f5089a0f3dbdb38856798e556151c8264ed4b6a00c57e972fc147480cd9`
-- `desktop/dist/FreeFlow-Linux-0.2.0-amd64.deb` — 106,804,440 bytes,
-  SHA-256 `e6c3cb3168b813f7cfdd6831e26ca4b4f78f8d70b16005f6256f99db09d08cc3`
+- `desktop/dist/FreeFlow-Linux-0.2.0-x86_64.AppImage` — 137,880,888 bytes,
+  SHA-256 `915772aacb915055891c4f37502ac06b5dd4f512c64fdde5f72eb13ec35d992e`
+- `desktop/dist/FreeFlow-Linux-0.2.0-amd64.deb` — 106,922,940 bytes,
+  SHA-256 `37b56ee072d5cfa056ced9ecdf228c8baefb00cc19cff0d0e1eeb864f4a87499`
 - `rust/target/release/freeflow-daemon`, bundled into both artifacts
 - `~/.local/share/freeflow/FreeFlow.AppImage`, installed for the current user
 - `~/.local/share/applications/com.freeflow.FreeFlow.Linux.desktop`
@@ -197,8 +199,8 @@ Build outputs remain ignored and are not committed.
   paste cannot be guaranteed. FreeFlow keeps the transcript in the clipboard
   and exposes retry/copy recovery for those cases.
 - Direct AT-SPI insertion is not implemented. Clipboard restoration uses a
-  bounded 160 ms consumption window because Linux toolkits do not expose a
-  universal paste acknowledgement. Oversized or uncommon custom MIME payloads
+  bounded one-second delivery grace period because Linux toolkits do not expose
+  a universal paste acknowledgement. Oversized or uncommon custom MIME payloads
   leave the transcript available instead of risking an unsafe restoration.
 - X11 implementation tests pass, but the full VS Code, Firefox, terminal,
   GTK, and Qt manual matrix was not repeated in this session.
@@ -217,7 +219,8 @@ which modifier is pressed first, receives separate activation/deactivation
 events, captures the original window before showing the HUD, and restores that
 window before paste. Clipboard readiness is confirmed before synthetic input.
 After successful paste, FreeFlow restores the previous bounded clipboard
-payload only if the staged transcript still owns the clipboard.
+payload in the background after a one-second grace period, and only if the
+staged transcript still owns the clipboard.
 
 On other compositors, portal registration is attempted first and `wtype` is used
 when the virtual-keyboard protocol is available. The tray and Flow button remain
