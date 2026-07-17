@@ -232,10 +232,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
 
         if let button = statusItem.button {
-            button.image = NSImage(
-                systemSymbolName: "waveform",
-                accessibilityDescription: "FreeFlow"
-            )
+            button.image = MenuBarIcon.image
         }
 
         self.statusItem = statusItem

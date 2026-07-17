@@ -686,10 +686,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         // Static waveform icon for all states. The HUD overlay communicates
         // recording/processing state; the menu bar icon stays simple.
         guard let button = statusItem?.button else { return }
-        button.image = NSImage(
-            systemSymbolName: "waveform",
-            accessibilityDescription: "FreeFlow"
-        )
+        button.image = MenuBarIcon.image
     }
 
     deinit {
