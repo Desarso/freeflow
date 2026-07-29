@@ -54,7 +54,7 @@ async fn providers(scenario: Scenario) -> (MockServer, OpenAIProviders) {
     let server = MockServer::start(scenario).await.unwrap();
     let settings = AppSettings {
         api_base_url: server.api_base_url.clone(),
-        realtime_model: "gpt-realtime-whisper".into(),
+        realtime_model: "gpt-live-transcribe".into(),
         transcription_model: "mock-transcription-model".into(),
         polish_model: "gpt-5.4-nano".into(),
         request_timeout_seconds: 5,
@@ -136,9 +136,11 @@ async fn streams_resampled_audio_and_delivers_partial_and_final_text() {
     assert_eq!(metrics.realtime_connections, 1);
     assert_eq!(
         metrics.realtime_model.as_deref(),
-        Some("gpt-realtime-whisper")
+        Some("gpt-live-transcribe")
     );
-    assert_eq!(metrics.realtime_delay.as_deref(), Some("low"));
+    assert_eq!(metrics.realtime_delay.as_deref(), Some("minimal"));
+    assert_eq!(metrics.realtime_language, None);
+    assert_eq!(metrics.realtime_languages, ["en"]);
     assert_eq!(metrics.realtime_audio_bytes, 24_000 * 2);
 }
 

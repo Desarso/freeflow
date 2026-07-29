@@ -6,6 +6,8 @@ use async_trait::async_trait;
 use directories::ProjectDirs;
 use freeflow_core::{AppSettings, FreeFlowError, Result, SettingsStore};
 
+const LEGACY_REALTIME_MODEL: &str = "gpt-realtime-whisper";
+
 #[derive(Debug, Clone)]
 pub struct JsonSettingsStore {
     path: PathBuf,
@@ -31,9 +33,14 @@ impl JsonSettingsStore {
     fn load_sync(path: &Path) -> Result<AppSettings> {
         match std::fs::read(path) {
             Ok(contents) => {
-                let settings: AppSettings = serde_json::from_slice(&contents).map_err(|error| {
-                    FreeFlowError::Configuration(format!("could not parse settings: {error}"))
-                })?;
+                let mut settings: AppSettings =
+                    serde_json::from_slice(&contents).map_err(|error| {
+                        FreeFlowError::Configuration(format!("could not parse settings: {error}"))
+                    })?;
+                if settings.realtime_model == LEGACY_REALTIME_MODEL {
+                    settings.realtime_model = AppSettings::default().realtime_model;
+                    Self::save_sync(path, &settings)?;
+                }
                 settings.validate()?;
                 Ok(settings)
             }
@@ -171,6 +178,23 @@ mod tests {
         assert_eq!(store.load().await.unwrap(), settings);
         let contents = std::fs::read_to_string(store.path()).unwrap();
         assert!(!contents.contains("apiKey"));
+    }
+
+    #[tokio::test]
+    async fn replaces_the_legacy_realtime_model() {
+        let store = temporary_store();
+        let legacy = AppSettings {
+            realtime_model: LEGACY_REALTIME_MODEL.into(),
+            ..AppSettings::default()
+        };
+        store.save(&legacy).await.unwrap();
+
+        let settings = store.load().await.unwrap();
+
+        assert_eq!(settings.realtime_model, "gpt-live-transcribe");
+        let persisted: AppSettings =
+            serde_json::from_slice(&std::fs::read(store.path()).unwrap()).unwrap();
+        assert_eq!(persisted.realtime_model, "gpt-live-transcribe");
     }
 
     #[cfg(unix)]

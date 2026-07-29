@@ -69,6 +69,8 @@ pub struct RequestMetrics {
     pub realtime_audio_bytes: usize,
     pub realtime_model: Option<String>,
     pub realtime_delay: Option<String>,
+    pub realtime_language: Option<String>,
+    pub realtime_languages: Vec<String>,
     pub polish_reasoning_effort: Option<String>,
     pub polish_verbosity: Option<String>,
 }
@@ -234,9 +236,23 @@ async fn realtime_session(socket: WebSocket, state: MockState) {
                     .pointer("/session/audio/input/transcription/delay")
                     .and_then(Value::as_str)
                     .map(ToOwned::to_owned);
+                let language = event
+                    .pointer("/session/audio/input/transcription/language")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned);
+                let languages = event
+                    .pointer("/session/audio/input/transcription/languages")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .map(ToOwned::to_owned)
+                    .collect();
                 let mut metrics = state.metrics.lock().await;
                 metrics.realtime_model = model;
                 metrics.realtime_delay = delay;
+                metrics.realtime_language = language;
+                metrics.realtime_languages = languages;
                 drop(metrics);
                 if state.scenario == Scenario::RealtimeError {
                     let _ = sender

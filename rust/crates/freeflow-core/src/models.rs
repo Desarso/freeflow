@@ -266,7 +266,7 @@ impl Default for AppSettings {
     fn default() -> Self {
         Self {
             api_base_url: "https://api.openai.com/v1".into(),
-            realtime_model: "gpt-realtime-whisper".into(),
+            realtime_model: "gpt-live-transcribe".into(),
             transcription_model: "gpt-4o-mini-transcribe".into(),
             polish_model: "gpt-5.4-nano".into(),
             language: "en".into(),
@@ -410,6 +410,7 @@ mod tests {
         let settings = AppSettings::default();
 
         assert!(settings.start_on_login);
+        assert_eq!(settings.realtime_model, "gpt-live-transcribe");
         assert_eq!(
             settings.shortcut.modifiers,
             vec![ShortcutModifier::Control, ShortcutModifier::Super]

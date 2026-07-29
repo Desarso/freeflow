@@ -31,7 +31,9 @@ type SocketSink = SplitSink<Socket, Message>;
 
 const MAX_CONNECT_ATTEMPTS: usize = 3;
 const MAX_AUDIO_CHUNK_SAMPLES: usize = 96_000;
-const TRANSCRIPTION_DELAY: &str = "low";
+const LIVE_TRANSCRIPTION_MODEL: &str = "gpt-live-transcribe";
+const LIVE_TRANSCRIPTION_DELAY: &str = "minimal";
+const WHISPER_TRANSCRIPTION_DELAY: &str = "low";
 
 #[derive(Clone)]
 pub struct OpenAIRealtimeProvider {
@@ -143,11 +145,18 @@ impl OpenAIRealtimeSession {
     ) -> Result<Self> {
         let (mut sink, mut source) = socket.split();
         let mut transcription = json!({"model": model});
-        if !language.trim().is_empty() && language != "auto" {
-            transcription["language"] = json!(language);
-        }
-        if model.starts_with("gpt-realtime-whisper") {
-            transcription["delay"] = json!(TRANSCRIPTION_DELAY);
+        if model == LIVE_TRANSCRIPTION_MODEL {
+            transcription["delay"] = json!(LIVE_TRANSCRIPTION_DELAY);
+            if !language.trim().is_empty() && language != "auto" {
+                transcription["languages"] = json!([language]);
+            }
+        } else {
+            if !language.trim().is_empty() && language != "auto" {
+                transcription["language"] = json!(language);
+            }
+            if model.starts_with("gpt-realtime-whisper") {
+                transcription["delay"] = json!(WHISPER_TRANSCRIPTION_DELAY);
+            }
         }
         let update = json!({
             "type": "session.update",
