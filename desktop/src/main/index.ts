@@ -9,7 +9,8 @@ import {
   dialog,
   ipcMain,
   nativeImage,
-  screen
+  screen,
+  type NativeImage
 } from 'electron';
 
 import { DaemonSupervisor } from './daemon';
@@ -37,6 +38,7 @@ let settingsWindow: BrowserWindow | null = null;
 let hudWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let supervisor: DaemonSupervisor | null = null;
+let appIcon: NativeImage | null = null;
 let quitting = false;
 let connected = false;
 let currentStatus: AppStatus | null = null;
@@ -71,6 +73,7 @@ if (!app.requestSingleInstanceLock({ launchHidden })) {
 
 async function startApplication(): Promise<void> {
   app.setAppUserModelId('com.freeflow.FreeFlow.Linux');
+  appIcon = loadAppIcon();
   createWindows();
   createTray();
   registerIpc();
@@ -140,6 +143,7 @@ function createWindows(): void {
     show: false,
     backgroundColor: '#111512',
     title: 'FreeFlow',
+    icon: appIcon ?? undefined,
     autoHideMenuBar: true,
     webPreferences: {
       preload,
@@ -172,6 +176,7 @@ function createHudWindow(
 
   const window = new BrowserWindow({
     title: HUD_TITLE,
+    icon: appIcon ?? undefined,
     width: HUD_WIDTH,
     height: HUD_HEIGHT,
     frame: false,
@@ -289,14 +294,23 @@ async function loadRenderer(window: BrowserWindow, route: string): Promise<void>
 }
 
 function createTray(): void {
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><rect x="2" y="2" width="20" height="20" rx="6" fill="#171d18"/><path d="M7 7h10v3H10v2h6v3h-6v4H7z" fill="#d9ff73"/></svg>`;
-  const icon = nativeImage.createFromDataURL(
-    `data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`
-  );
+  const icon = appIcon ?? loadAppIcon();
   tray = new Tray(icon.resize({ width: 22, height: 22 }));
   tray.setToolTip('FreeFlow');
   tray.on('double-click', showSettings);
   rebuildTray();
+}
+
+function loadAppIcon(): NativeImage {
+  const candidates = [
+    join(process.resourcesPath, 'icon.png'),
+    join(app.getAppPath(), 'build', 'icon.png')
+  ];
+  for (const candidate of candidates) {
+    const icon = nativeImage.createFromPath(candidate);
+    if (!icon.isEmpty()) return icon;
+  }
+  throw new Error(`FreeFlow icon is missing from ${candidates.join(' and ')}`);
 }
 
 function rebuildTray(): void {

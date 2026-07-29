@@ -9,6 +9,8 @@ files:
 extraResources:
   - from: ../rust/target/release/freeflow-daemon
     to: bin/freeflow-daemon
+  - from: build/icon.png
+    to: icon.png
 linux:
   category: Utility
   executableName: freeflow
