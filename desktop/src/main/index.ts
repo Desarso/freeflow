@@ -27,6 +27,7 @@ import {
   useWindow,
   useWindowOrRecover
 } from './window-lifecycle';
+import { developmentRendererUrl } from './renderer-location';
 import type { AppStatus, RecordingState } from '../shared/models';
 import {
   RPC_METHODS,
@@ -285,7 +286,7 @@ function ensureHudWindow(): BrowserWindow | null {
 }
 
 async function loadRenderer(window: BrowserWindow, route: string): Promise<void> {
-  const developmentUrl = process.env.ELECTRON_RENDERER_URL;
+  const developmentUrl = developmentRendererUrl(app.isPackaged);
   if (developmentUrl) {
     await window.loadURL(`${developmentUrl}#${route}`);
   } else {
