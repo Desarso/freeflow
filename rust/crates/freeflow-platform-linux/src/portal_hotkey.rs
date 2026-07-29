@@ -1,6 +1,9 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
+use std::{
+    path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use ashpd::desktop::{
@@ -11,7 +14,15 @@ use async_trait::async_trait;
 use freeflow_core::{FreeFlowError, HotkeyEvent, HotkeyProvider, Result, Shortcut};
 use futures_util::StreamExt;
 use serde_json::Value;
-use tokio::{process::Command, sync::Mutex, task::JoinHandle, time::timeout};
+use tokio::{
+    io::{AsyncBufReadExt, BufReader},
+    net::UnixStream,
+    process::Command,
+    sync::Mutex,
+    task::JoinHandle,
+    time::timeout,
+};
+use tracing::warn;
 
 const SHORTCUT_ID: &str = "push-to-talk";
 const SHORTCUT_DESCRIPTION: &str = "Hold to dictate with FreeFlow";
@@ -21,6 +32,7 @@ const PORTAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
 struct PortalRegistration {
     session: Session<GlobalShortcuts>,
     event_task: JoinHandle<()>,
+    hyprland_watch_task: Option<JoinHandle<()>>,
     hyprland_bindings: Vec<HyprlandBinding>,
 }
 
@@ -104,7 +116,8 @@ impl PortalHotkeyProvider {
             ));
         }
 
-        let hyprland_bindings = if is_hyprland() {
+        let using_hyprland = is_hyprland();
+        let hyprland_bindings = if using_hyprland {
             match install_hyprland_bindings(shortcut).await {
                 Ok(bindings) => bindings,
                 Err(error) => {
@@ -151,10 +164,15 @@ impl PortalHotkeyProvider {
             }
             registered.store(false, Ordering::SeqCst);
         });
+        let hyprland_watch_task = using_hyprland.then(|| {
+            let shortcut = shortcut.clone();
+            tokio::spawn(async move { watch_hyprland_config_reloads(shortcut).await })
+        });
 
         Ok(PortalRegistration {
             session,
             event_task,
+            hyprland_watch_task,
             hyprland_bindings,
         })
     }
@@ -190,6 +208,9 @@ impl HotkeyProvider for PortalHotkeyProvider {
     async fn unregister(&self) -> Result<()> {
         if let Some(registration) = self.registration.lock().await.take() {
             registration.event_task.abort();
+            if let Some(task) = registration.hyprland_watch_task {
+                task.abort();
+            }
             remove_hyprland_bindings(&registration.hyprland_bindings).await;
             registration.session.close().await.map_err(portal_error)?;
         }
@@ -212,6 +233,38 @@ fn is_hyprland() -> bool {
         .filter_map(|name| std::env::var(name).ok())
         .any(|value| value.to_ascii_lowercase().contains("hyprland"))
         || std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some()
+}
+
+fn hyprland_event_socket_path() -> Option<PathBuf> {
+    let runtime_dir = std::env::var_os("XDG_RUNTIME_DIR")?;
+    let instance = std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE")?;
+    Some(
+        PathBuf::from(runtime_dir)
+            .join("hypr")
+            .join(instance)
+            .join(".socket2.sock"),
+    )
+}
+
+async fn watch_hyprland_config_reloads(shortcut: Shortcut) {
+    let Some(socket_path) = hyprland_event_socket_path() else {
+        return;
+    };
+    let stream = match UnixStream::connect(socket_path).await {
+        Ok(stream) => stream,
+        Err(error) => {
+            warn!(%error, "could not monitor Hyprland shortcut configuration");
+            return;
+        }
+    };
+    let mut events = BufReader::new(stream).lines();
+    while let Ok(Some(event)) = events.next_line().await {
+        if event.starts_with("configreloaded>>")
+            && let Err(error) = install_hyprland_bindings(&shortcut).await
+        {
+            warn!(%error, "could not restore FreeFlow's Hyprland shortcut");
+        }
+    }
 }
 
 async fn install_hyprland_bindings(shortcut: &Shortcut) -> Result<Vec<HyprlandBinding>> {
